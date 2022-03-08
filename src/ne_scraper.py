@@ -16,14 +16,15 @@ ONE_MINUTE = 60
 class NEArchiver:
     def __init__(self, author: str, debug: bool, max_backoff_override: float):
         """Instantiates top-level url to begin scraping from"""
-        self._debug = debug
+        self._DEBUG = debug
         # Timer in seconds
         self._back_off_timer = 1.0
         self._back_off_timer_max = max(60.0, max_backoff_override)
         self._back_off_timer_min = 1.0
+        self._posts_per_save = 5
         # create logger
         self._LOG = logging.getLogger("NEArchiver")
-        if self._debug:
+        if self._DEBUG:
             self._LOG.setLevel(logging.DEBUG)
         else:
             self._LOG.setLevel(logging.INFO)
@@ -111,7 +112,7 @@ class NEArchiver:
             tasks = []
             for idx, author_post in enumerate(author_posts):
                 tasks.append(asyncio.create_task(self._archive(author_post)))
-                if not len(tasks) % 15:
+                if not len(tasks) % self._posts_per_save:
                     try:
                         self._archived_page_urls.extend(await asyncio.gather(*tasks))
                     except TooManyRequestsError as e:
@@ -125,7 +126,7 @@ class NEArchiver:
                         continue
                     tasks.clear()
                     self._LOG.debug(
-                        f"Archived {idx + 1} posts. Backing off for 2 minute(s)"
+                        f"Archived {idx + 1} posts. Backing off for {self._back_off_timer} minute(s)"
                     )
                     time.sleep(self._back_off_timer * ONE_MINUTE)
                     self._decrement_backoff_timer()
