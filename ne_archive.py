@@ -49,7 +49,7 @@ def coro(f):
 )
 @click.option(
     "--debug/--no-debug",
-    default=False,
+    default=True,
     help="Turn on or off debug logs",
     show_default=True,
 )
