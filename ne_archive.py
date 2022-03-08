@@ -47,11 +47,24 @@ def coro(f):
     help="The author's name as seen in the author url (i.e. For 'nintendoenthusiast.com/author/omar-t/', the author is "
     "'omar-t'",
 )
-@click.option("--debug/--no-debug", default=False, help="Turn on or off debug logs", show_default=True)
+@click.option(
+    "--debug/--no-debug",
+    default=False,
+    help="Turn on or off debug logs",
+    show_default=True,
+)
+@click.option(
+    "--max-backoff-override",
+    default=0.0,
+    type=float,
+    help="The default backoff time maximum may not be sufficient. Use this to override. Value is in minutes",
+)
 @coro
-async def ne_archive(author: str, debug: bool):
+async def ne_archive(author: str, debug: bool, max_backoff_override: float):
     LOG.info(f"Archiving all posts from {author}")
-    ne_scraper = NEArchiver(author=author, debug=debug)
+    ne_scraper = NEArchiver(
+        author=author, debug=debug, max_backoff_override=max_backoff_override
+    )
     await ne_scraper.archive()
 
 

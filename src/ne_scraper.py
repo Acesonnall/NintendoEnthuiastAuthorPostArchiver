@@ -12,17 +12,20 @@ from waybackpy.exceptions import TooManyRequestsError
 
 
 class NEArchiver:
-    def __init__(self, author: str, debug: bool):
+    def __init__(self, author: str, debug: bool, max_backoff_override: float):
         """Instantiates top-level url to begin scraping from"""
-        self.debug = debug
-        # create self.LOGger
-        self.LOG = logging.getLogger("NEArchiver")
-        if self.debug:
-            self.LOG.setLevel(logging.DEBUG)
+        self._debug = debug
+        self._back_off_timer_mins = 2.0
+        self._back_off_timer_max_mins = max(60.0, max_backoff_override)
+        self._back_off_timer_min = 1.0
+        # create logger
+        self._LOG = logging.getLogger("NEArchiver")
+        if self._debug:
+            self._LOG.setLevel(logging.DEBUG)
         else:
-            self.LOG.setLevel(logging.INFO)
+            self._LOG.setLevel(logging.INFO)
         # create console handler and set level to debug.
-        # self.LOGging.StreamHandler(sys.stdout) to print to stdout instead of the default stderr
+        # logging.StreamHandler(sys.stdout) to print to stdout instead of the default stderr
         ch = logging.StreamHandler()
         ch.setLevel(logging.DEBUG)
 
@@ -34,22 +37,35 @@ class NEArchiver:
         # add formatter to ch
         ch.setFormatter(formatter)
 
-        # add ch to self.LOGger
-        self.LOG.addHandler(ch)
-        self.root_url = f"https://www.nintendoenthusiast.com/author/{author}"
-        self.user_agent = (
+        # add ch to logger
+        self._LOG.addHandler(ch)
+        self._root_url = f"https://www.nintendoenthusiast.com/author/{author}"
+        self._user_agent = (
             "Mozilla/5.0 (Windows NT 5.1; rv:40.0) Gecko/20100101 Firefox/40.0"
         )
-        self.archived_page_urls = []
+        self._archived_page_urls = []
 
-    async def get_author_posts(self, soup) -> List:
+    def get_backoff_timer(self):
+        return self._back_off_timer_min
+
+    def _increment_backoff_timer(self):
+        self._back_off_timer_mins = min(
+            self._back_off_timer_mins * 2, self._back_off_timer_max_mins
+        )
+
+    def _decrement_backoff_timer(self):
+        self._back_off_timer_mins = max(
+            self._back_off_timer_mins / 2, self._back_off_timer_min
+        )
+
+    async def _get_author_posts(self, soup) -> List:
         return (
             soup.find_all("div", class_="mnmd-main-col")
             .pop()
             .find_all("h3", class_="post__title")
         )
 
-    async def fetch_page(self, url: str) -> BeautifulSoup:
+    async def _fetch_page(self, url: str) -> BeautifulSoup:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as r:
                 # Convert the response into an easily parsable object
@@ -57,37 +73,42 @@ class NEArchiver:
                 soup = BeautifulSoup(text.decode("utf-8"), "html.parser")
         return soup
 
+    async def _archive(self, author_post) -> str:
+        save_api = WaybackMachineSaveAPI(author_post.a["href"], self._user_agent)
+        archived_page_url = save_api.save()
+        return archived_page_url
+
     async def archive(self):
         """This code will only work on Windows as it stands now."""
         try:
             # Get the first page
-            self.LOG.info(f"Fetching {self.root_url}...")
-            p1_soup = await self.fetch_page(self.root_url)
+            self._LOG.info(f"Fetching {self._root_url}...")
+            p1_soup = await self._fetch_page(self._root_url)
             # Extract total page numbers
             total_page_numbers = int(
                 p1_soup.find_all("a", class_="mnmd-pagination__item").pop().get_text()
             )
             # Extract list of author posts from all pages
-            self.LOG.info(
+            self._LOG.info(
                 f"Extracting remaining {total_page_numbers - 1} pages of author posts..."
             )
             tasks = []
             for page_number in range(2, total_page_numbers + 1):
                 tasks.append(
                     asyncio.create_task(
-                        self.fetch_page(f"{self.root_url}/page/{page_number}/")
+                        self._fetch_page(f"{self._root_url}/page/{page_number}/")
                     )
                 )
             remaining_pages_soup = await asyncio.gather(*tasks)
-            author_posts = await self.get_author_posts(p1_soup)
+            author_posts = await self._get_author_posts(p1_soup)
             for page_soup in remaining_pages_soup:
-                author_posts.extend(await self.get_author_posts(page_soup))
-            self.LOG.info(
+                author_posts.extend(await self._get_author_posts(page_soup))
+            self._LOG.info(
                 f"Found {len(author_posts)} posts. Archiving them. Wayback Machine could try to fight us so this "
                 f"could take a while. "
             )
-            self.LOG.info(
-                "Be prepared to let this run for 30 minutes to a day depending on how much posts you're "
+            self._LOG.info(
+                "Be prepared to let this run for 30 minutes to a day depending on how many posts you're "
                 "archiving."
             )
             # Archive all posts
@@ -96,39 +117,35 @@ class NEArchiver:
                 tasks.append(asyncio.create_task(self._archive(author_post)))
                 if not len(tasks) % 15:
                     try:
-                        self.archived_page_urls.extend(await asyncio.gather(*tasks))
+                        self._archived_page_urls.extend(await asyncio.gather(*tasks))
                     except TooManyRequestsError as e:
                         back_off_mins = 10
-                        self.LOG.error(e)
-                        self.LOG.info(f"Backing off for {back_off_mins} minutes.")
-                        time.sleep(back_off_mins * 60)
-                        self.LOG.info("Resuming.")
+                        self._LOG.error(e)
+                        self._LOG.info(f"Backing off for {back_off_mins} minutes.")
+                        self._increment_backoff_timer()
+                        self._LOG.info("Resuming.")
                         continue
                     tasks.clear()
-                    self.LOG.debug(
+                    self._LOG.debug(
                         f"Archived {idx + 1} posts. Backing off for 2 minutes"
                     )
-                    time.sleep(120)
-            self.LOG.info(
+                    time.sleep(self.get_backoff_timer())
+                    self._decrement_backoff_timer()
+            self._LOG.info(
                 f"All {len(author_posts)} successfully archived. Here are the links to the archived pages:"
             )
-            for archived_page in self.archived_page_urls:
-                self.LOG.info(f"{archived_page}")
+            for archived_page in self._archived_page_urls:
+                self._LOG.info(f"{archived_page}")
         except IndexError:
-            self.LOG.error(
+            self._LOG.error(
                 "Please check that the author named entered is valid. If you're sure that's right, reach out to "
                 "the code maintainer or debug the issue yourself."
             )
         except Exception as e:
-            self.LOG.error(f"Exception: {e}")
-            if self.archived_page_urls:
-                self.LOG.info(
+            self._LOG.error(f"Exception: {e}")
+            if self._archived_page_urls:
+                self._LOG.info(
                     f"Some author posts were successfully archived. Here are the links to the archived pages:"
                 )
-                for archived_page in self.archived_page_urls:
-                    self.LOG.info(f"{archived_page}")
-
-    async def _archive(self, author_post) -> str:
-        save_api = WaybackMachineSaveAPI(author_post.a["href"], self.user_agent)
-        archived_page_url = save_api.save()
-        return archived_page_url
+                for archived_page in self._archived_page_urls:
+                    self._LOG.info(f"{archived_page}")
