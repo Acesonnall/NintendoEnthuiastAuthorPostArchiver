@@ -10,13 +10,16 @@ from typing import List
 from waybackpy import WaybackMachineSaveAPI
 from waybackpy.exceptions import TooManyRequestsError
 
+ONE_MINUTE = 60
+
 
 class NEArchiver:
     def __init__(self, author: str, debug: bool, max_backoff_override: float):
         """Instantiates top-level url to begin scraping from"""
         self._debug = debug
-        self._back_off_timer_mins = 2.0
-        self._back_off_timer_max_mins = max(60.0, max_backoff_override)
+        # Timer in seconds
+        self._back_off_timer = 1.0
+        self._back_off_timer_max = max(60.0, max_backoff_override)
         self._back_off_timer_min = 1.0
         # create logger
         self._LOG = logging.getLogger("NEArchiver")
@@ -45,18 +48,11 @@ class NEArchiver:
         )
         self._archived_page_urls = []
 
-    def get_backoff_timer(self):
-        return self._back_off_timer_min
-
     def _increment_backoff_timer(self):
-        self._back_off_timer_mins = min(
-            self._back_off_timer_mins * 2, self._back_off_timer_max_mins
-        )
+        self._back_off_timer = min(self._back_off_timer * 2, self._back_off_timer_max)
 
     def _decrement_backoff_timer(self):
-        self._back_off_timer_mins = max(
-            self._back_off_timer_mins / 2, self._back_off_timer_min
-        )
+        self._back_off_timer = max(self._back_off_timer / 2, self._back_off_timer_min)
 
     async def _get_author_posts(self, soup) -> List:
         return (
@@ -119,17 +115,19 @@ class NEArchiver:
                     try:
                         self._archived_page_urls.extend(await asyncio.gather(*tasks))
                     except TooManyRequestsError as e:
-                        back_off_mins = 10
                         self._LOG.error(e)
-                        self._LOG.info(f"Backing off for {back_off_mins} minutes.")
+                        self._LOG.info(
+                            f"Backing off for {self._back_off_timer} minute(s)."
+                        )
+                        time.sleep(self._back_off_timer * ONE_MINUTE)
                         self._increment_backoff_timer()
                         self._LOG.info("Resuming.")
                         continue
                     tasks.clear()
                     self._LOG.debug(
-                        f"Archived {idx + 1} posts. Backing off for 2 minutes"
+                        f"Archived {idx + 1} posts. Backing off for 2 minute(s)"
                     )
-                    time.sleep(self.get_backoff_timer())
+                    time.sleep(self._back_off_timer * ONE_MINUTE)
                     self._decrement_backoff_timer()
             self._LOG.info(
                 f"All {len(author_posts)} successfully archived. Here are the links to the archived pages:"
